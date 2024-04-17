@@ -14,7 +14,7 @@ load_dotenv()
 
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
-guildId = os.getenv("GUILD_ID")
+guildId = int(os.getenv("GUILD_ID"))
 
 
 viewHelper = None
@@ -249,7 +249,7 @@ async def remove_admin_user(interaction, member: discord.Member):
 
     adminFile = open("admins.json")
     adminData = json.load(adminFile)
-    
+
     try:
         adminData["users"].remove(member.id)
     except ValueError:
@@ -260,7 +260,7 @@ async def remove_admin_user(interaction, member: discord.Member):
     await interaction.response.send_message(f"Removed {member.display_name} from the admin list", ephemeral=True)
 
 @tree.command(name="add-admin-role", description="Adds a role to the list of roles that count as admins", guild=discord.Object(id=guildId))
-async def add_admin_role(interaction, role=discord.Role):
+async def add_admin_role(interaction, role: discord.Role):
     if not _isAdmin(interaction.user.id):
         await interaction.response.send_message(f"You do not have permission to use this command", ephemeral=True)
 
@@ -274,7 +274,7 @@ async def add_admin_role(interaction, role=discord.Role):
     await interaction.response.send_message(f"Added {role.name} to the admin list", ephemeral=True)
 
 @tree.command(name="remove-admin-role", description="Removes a role to the list from roles that count as admins", guild=discord.Object(id=guildId))
-async def add_admin_role(interaction, role=discord.Role):
+async def add_admin_role(interaction, role: discord.Role):
     if not _isAdmin(interaction.user.id):
         await interaction.response.send_message(f"You do not have permission to use this command", ephemeral=True)
 
