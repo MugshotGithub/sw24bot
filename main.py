@@ -10,11 +10,12 @@ from dotenv import load_dotenv # Python-dotenv package
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+load_dotenv()
 
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
-guildId = 1006768625870438530
-load_dotenv()
+guildId = os.getenv("GUILD_ID")
+
 
 viewHelper = None
 
