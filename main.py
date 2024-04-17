@@ -197,20 +197,16 @@ async def _transfer_points(fromMemberId, toMemberId, num):
     await toUser.send(f"{fromUser.display_name} has sent you {num} points!")
 
 
-@tree.command(name="transfer-points", description="Transfers your points to a user. Alias of pay-member",
-              guild=discord.Object(id=guildId))
+@tree.command(name="transfer-points", description="Transfers your points to a user. Alias of pay-member", guild=discord.Object(id=guildId))
 async def transfer_points(interaction, member: discord.Member, points: int):
     await _transfer_points(interaction.user.id, member.id, points)
-    await interaction.response.send_message(f"Sent {member.display_name} {points} points!", ephemeral=True,
-                                            silent=False)
+    await interaction.response.send_message(f"Sent {member.display_name} {points} points!", ephemeral=True, silent=False)
 
 
-@tree.command(name="pay-member", description="Transfers your points to a user. Alias of transfer-points",
-              guild=discord.Object(id=guildId))
+@tree.command(name="pay-member", description="Transfers your points to a user. Alias of transfer-points", guild=discord.Object(id=guildId))
 async def pay_member(interaction, member: discord.Member, points: int):
     await _transfer_points(interaction.user.id, member.id, points)
-    await interaction.response.send_message(f"Sent {member.display_name} {points} points!", ephemeral=True,
-                                            silent=False)
+    await interaction.response.send_message(f"Sent {member.display_name} {points} points!", ephemeral=True, silent=False)
 
 
 @tree.command(name="leaderboard", description="Gets the top 10 points collectors", guild=discord.Object(id=guildId))
@@ -231,6 +227,68 @@ async def create_live_leaderboard(interaction):
     viewHelper = vh
     await vh.post_view()
     await interaction.response.send_message(f"Creating post", ephemeral=True, delete_after=3, silent=True)
+
+@tree.command(name="add-admin-user", description="Adds a member to the list of admins", guild=discord.Object(id=guildId))
+async def add_admin_user(interaction, member: discord.Member):
+    if not _isAdmin(interaction.user.id):
+        await interaction.response.send_message(f"You do not have permission to use this command", ephemeral=True)
+
+    adminFile = open("admins.json")
+    adminData = json.load(adminFile)
+
+    adminData["users"].append(member.id)
+    json.dump(adminFile, adminData)
+    adminFile.close()
+
+    await interaction.response.send_message(f"Added {member.display_name} to the admin list", ephemeral=True)
+
+@tree.command(name="remove-admin-user", description="Removes a member from the list of admins", guild=discord.Object(id=guildId))
+async def remove_admin_user(interaction, member: discord.Member):
+    if not _isAdmin(interaction.user.id):
+        await interaction.response.send_message(f"You do not have permission to use this command", ephemeral=True)
+
+    adminFile = open("admins.json")
+    adminData = json.load(adminFile)
+    
+    try:
+        adminData["users"].remove(member.id)
+    except ValueError:
+        pass
+
+    json.dump(adminFile, adminData)
+    adminFile.close()
+    await interaction.response.send_message(f"Removed {member.display_name} from the admin list", ephemeral=True)
+
+@tree.command(name="add-admin-role", description="Adds a role to the list of roles that count as admins", guild=discord.Object(id=guildId))
+async def add_admin_role(interaction, role=discord.Role):
+    if not _isAdmin(interaction.user.id):
+        await interaction.response.send_message(f"You do not have permission to use this command", ephemeral=True)
+
+    adminFile = open("admins.json")
+    adminData = json.load(adminFile)
+
+    adminData["roles"].append(role.id)
+
+    json.dump(adminFile, adminData)
+    adminFile.close()
+    await interaction.response.send_message(f"Added {role.name} to the admin list", ephemeral=True)
+
+@tree.command(name="remove-admin-role", description="Removes a role to the list from roles that count as admins", guild=discord.Object(id=guildId))
+async def add_admin_role(interaction, role=discord.Role):
+    if not _isAdmin(interaction.user.id):
+        await interaction.response.send_message(f"You do not have permission to use this command", ephemeral=True)
+
+    adminFile = open("admins.json")
+    adminData = json.load(adminFile)
+
+    try:
+        adminData["roles"].remove(role.id)
+    except ValueError:
+        pass
+
+    json.dump(adminFile, adminData)
+    adminFile.close()
+    await interaction.response.send_message(f"Removed {role.name} from the admin list", ephemeral=True)
 
 
 bot.run(os.getenv("BOT_KEY"))
