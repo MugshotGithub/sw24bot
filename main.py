@@ -5,7 +5,10 @@ import discord
 from discord import app_commands
 import sqlite3
 from datetime import datetime
+
+from discord.ext import tasks
 from dotenv import load_dotenv  # Python-dotenv package
+import discord_colorize
 from StartGG import get_games
 
 intents = discord.Intents.default()
@@ -16,7 +19,7 @@ load_dotenv()
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 guildId = int(os.getenv("GUILD_ID"))
-
+betViews = {}
 
 async def _isAdmin(userId):
     adminFile = open("admins.json")
@@ -213,6 +216,9 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
 
         con.close()
 
+        global betViews
+        await betViews[self.setId].update()
+
 
 async def reconnectBetViews():
     con = sqlite3.connect('database.db')
@@ -224,7 +230,9 @@ async def reconnectBetViews():
     con.close()
 
     for betSet in sets:
-        bot.add_view(BetView(betSet[5], betSet[6], betSet[0]))
+        view = BetView(betSet[5], betSet[6], betSet[0])
+        betViews[betSet[0]] = view
+        bot.add_view(view)
 
 
 class BetView(discord.ui.View):
@@ -234,6 +242,7 @@ class BetView(discord.ui.View):
         self.playerTwoName = playerTwoName
         self.setId = setId
         self.timeout = None
+        self.hasStarted = False
 
         playerOneButton = discord.ui.Button(label=f'Bet for {self.playerOneName} to win',
                                             style=discord.ButtonStyle.green,
@@ -248,14 +257,20 @@ class BetView(discord.ui.View):
         self.add_item(playerTwoButton)
 
     async def playerOne(self, interaction):
+        if self.hasStarted:
+            return await interaction.response.send_message("This game has started, you can no longer bet on it.", ephemeral=True)
+
         await interaction.response.send_modal(BetEntryForm(self.playerOneName, self.setId))
         await self.update()
 
     async def playerTwo(self, interaction):
+        if self.hasStarted:
+            return await interaction.response.send_message("This game has started, you can no longer bet on it.", ephemeral=True)
+
         await interaction.response.send_modal(BetEntryForm(self.playerTwoName, self.setId))
         await self.update()
 
-    def updateMessageObject(self, message: discord.Message):
+    async def updateMessageObject(self, message: discord.Message):
         con = sqlite3.connect('database.db')
         cur = con.cursor()
 
@@ -263,6 +278,22 @@ class BetView(discord.ui.View):
 
         con.commit()
         con.close()
+        await self.update()
+
+    async def updateScore(self, playerOneScore, playerTwoScore):
+        con = sqlite3.connect('database.db')
+        cur = con.cursor()
+
+        cur.execute('UPDATE sets SET playerOneScore = ?, playerTwoScore = ? WHERE setId = ?',
+                    (playerOneScore, playerTwoScore, self.setId))
+        con.commit()
+        con.close()
+        await self.update()
+
+    async def startGame(self):
+        self.clear_items()
+        self.hasStarted = True
+        await self.update()
 
     async def update(self):
         global viewHelper
@@ -272,7 +303,7 @@ class BetView(discord.ui.View):
         con = sqlite3.connect('database.db')
         cur = con.cursor()
 
-        cur.execute('SELECT messageId, channelId, setTitle, gameTitle, betsPlayerOne, betsPlayerTwo FROM sets WHERE setId = ?', (self.setId,))
+        cur.execute('SELECT messageId, channelId, setTitle, gameTitle, betsPlayerOne, betsPlayerTwo, scorePlayerOne, scorePlayerTwo FROM sets WHERE setId = ?', (self.setId,))
         result = cur.fetchall()[0]
 
         con.close()
@@ -283,21 +314,45 @@ class BetView(discord.ui.View):
         message = await channel.fetch_message(result[0])
 
         embed = discord.Embed(title=f"{result[3]} - {result[2]}", colour=discord.Colour.from_str("#F62143"))
-        embed.add_field(name=discord.utils.escape_markdown(self.playerOneName), inline=True, value=0)
+        embed.add_field(name=discord.utils.escape_markdown(self.playerOneName), inline=True, value=result[6])
         embed.add_field(name='', value="vs", inline=True)
-        embed.add_field(name=discord.utils.escape_markdown(self.playerTwoName), inline=True, value=0)
+        embed.add_field(name=discord.utils.escape_markdown(self.playerTwoName), inline=True, value=result[7])
         embed.add_field(name='', inline=False, value='')
 
-        embed.add_field(name='', inline=True, value=f"{result[4]} Points")
+        embed.add_field(name='Bets total', inline=True, value=f"{result[4]} Points")
         embed.add_field(name='', inline=True, value='')
-        embed.add_field(name='', inline=True, value=f"{result[5]} Points")
+        embed.add_field(name=' ᲼᲼ ', inline=True, value=f"{result[5]} Points")
+        colors = discord_colorize.Colors()
+
+        totalBet = result[4]+result[5]
+        totalHashes = 52
+
+        if result[4] > 0:
+            numPlayerOne = round((result[4]/totalBet)*totalHashes)
+        else:
+            numPlayerOne = 0
+
+        if result[5] > 0:
+            numPlayerTwo = round((result[5]/totalBet)*totalHashes)
+        else:
+            numPlayerTwo = 0
+
+        numNone = 0 if result[4] + result[5] >= 1 else totalHashes
+        progressBar = f"""```ansi
+{colors.colorize('𓃑'*numPlayerOne, fg='cyan')}{colors.colorize('𓃑'*numPlayerTwo, fg='blue')}{colors.colorize('𓃑'*numNone, fg='gray')}
+```
+        """
+        embed.add_field(name='', value=progressBar, inline=False)
+
+        if self.hasStarted:
+            embed.set_footer(text="Game has started, Betting no longer allowed")
 
         await message.edit(embed=embed)
 
 
 @bot.event
 async def on_ready():
-    await tree.sync(guild=discord.Object(id=guildId))
+    # await tree.sync(guild=discord.Object(id=guildId))
     global viewHelper
 
     try:
@@ -496,8 +551,13 @@ async def createBet(interaction):
 
     await interaction.followup.send(f"Working")
     view = BetView("LongerNameTest", "LongerNameTest2", "Test")
-    message = await interaction.channel.send("Test", view=view)
-    view.updateMessageObject(message)
 
+    message = await interaction.channel.send(embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")), view=view)
+    await view.updateMessageObject(message)
+
+# @tasks.loop(seconds=30)
+# async def updateGames():
+#     for event in get_games():
+#
 
 bot.run(os.getenv("BOT_KEY"))

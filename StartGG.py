@@ -63,8 +63,8 @@ eventInfoQuery = gql(
 async def get_games():
     # Execute the query on the transport
     result = client.execute(eventIdQuery, variable_values={"slug": 'tournament/second-wind-2024'})
-
     tournament = result["tournament"]
+
     for event in tournament["events"]:
         eventInfo = client.execute(eventInfoQuery, variable_values={"id": event["id"]})
         yield eventInfo["event"]
