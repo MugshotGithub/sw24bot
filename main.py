@@ -555,9 +555,10 @@ async def createBet(interaction):
     message = await interaction.channel.send(embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")), view=view)
     await view.updateMessageObject(message)
 
-# @tasks.loop(seconds=30)
-# async def updateGames():
-#     for event in get_games():
-#
+@tasks.loop(seconds=60)
+async def updateGames():
+    for event in get_games("second-wind-2024"):
+
+
 
 bot.run(os.getenv("BOT_KEY"))

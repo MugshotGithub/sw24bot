@@ -60,9 +60,9 @@ eventInfoQuery = gql(
 
 # This is a Generator
 # This should be used in a for loop.
-async def get_games():
+async def get_games(tournament):
     # Execute the query on the transport
-    result = client.execute(eventIdQuery, variable_values={"slug": 'tournament/second-wind-2024'})
+    result = client.execute(eventIdQuery, variable_values={"slug": tournament})
     tournament = result["tournament"]
 
     for event in tournament["events"]:
