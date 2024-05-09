@@ -1,15 +1,19 @@
+import functools
 import json
 import os
 import re
+import typing
+
 import discord
 from discord import app_commands
 import sqlite3
 from datetime import datetime
 
 from discord.ext import tasks
+from discord.utils import escape_markdown
 from dotenv import load_dotenv  # Python-dotenv package
 import discord_colorize
-from StartGG import get_games
+from StartGG import get_games, get_tournament_info
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -20,6 +24,7 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 guildId = int(os.getenv("GUILD_ID"))
 betViews = {}
+
 
 async def _isAdmin(userId):
     adminFile = open("admins.json")
@@ -49,7 +54,7 @@ async def _remove_points(userId, points, update=True):
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute('BEGIN TRANSACTION;')
-    cursor.execute('INSERT OR IGNORE INTO users (id, points) VALUES (?, 0);', (userId,))
+    cursor.execute('INSERT OR IGNORE INTO users (id) VALUES (?);', (userId,))
     cursor.execute('UPDATE users SET points = points - ? WHERE id = ?;', (points, userId))
     conn.commit()
     conn.close()
@@ -61,7 +66,7 @@ async def _give_points(userId, points, update=True):
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
     cursor.execute('BEGIN TRANSACTION;')
-    cursor.execute('INSERT OR IGNORE INTO users (id, points) VALUES (?, 0);', (userId,))
+    cursor.execute('INSERT OR IGNORE INTO users (id) VALUES (?);', (userId,))
     cursor.execute('UPDATE users SET points = points + ? WHERE id = ?;', (points, userId))
     conn.commit()
     conn.close()
@@ -78,7 +83,8 @@ async def _get_leaderboard(stat="points") -> list:
     leaderboard = []
 
     for result in results:
-        member = guild.get_member(result[0]) if guild.get_member(result[0]) is not None else await guild.fetch_member(result[0])
+        member = guild.get_member(result[0]) if guild.get_member(result[0]) is not None else await guild.fetch_member(
+            result[0])
         leaderboard.append([member, result[1]])
 
     con.close()
@@ -161,6 +167,8 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
         con = sqlite3.connect('database.db')
         cur = con.cursor()
 
+        cur.execute('INSERT OR IGNORE INTO users (id) VALUES (?);', (interaction.user.id,))
+
         cur.execute('SELECT amount,winner FROM bets WHERE setId = ? AND userId = ?', (self.setId, interaction.user.id))
         betsMatching = cur.fetchall()
         if len(betsMatching) > 0:
@@ -191,8 +199,10 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
         # yuck
         if self.playerBetOn == result[5]:
             playerBet = "One"
+            indexBet = 0
         else:
             playerBet = "Two"
+            indexBet = 1
 
         queryVarBet = f"betsPlayer{playerBet}"
 
@@ -201,7 +211,7 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
 
         if len(betsMatching) == 0:
             cur.execute('INSERT INTO bets (userId, setId, winner, amount) VALUES (?, ?, ?, ?);',
-                        (interaction.user.id, self.setId, self.playerBetOn, betAmount))
+                        (interaction.user.id, self.setId, indexBet, betAmount))
             await interaction.followup.send(
                 f"Bet {betAmount} point{"s" if betAmount > 1 else ""} on {self.playerBetOn}", ephemeral=True)
         else:
@@ -243,6 +253,7 @@ class BetView(discord.ui.View):
         self.setId = setId
         self.timeout = None
         self.hasStarted = False
+        self.hasEnded = False
 
         playerOneButton = discord.ui.Button(label=f'Bet for {self.playerOneName} to win',
                                             style=discord.ButtonStyle.green,
@@ -258,14 +269,16 @@ class BetView(discord.ui.View):
 
     async def playerOne(self, interaction):
         if self.hasStarted:
-            return await interaction.response.send_message("This game has started, you can no longer bet on it.", ephemeral=True)
+            return await interaction.response.send_message("This game has started, you can no longer bet on it.",
+                                                           ephemeral=True)
 
         await interaction.response.send_modal(BetEntryForm(self.playerOneName, self.setId))
         await self.update()
 
     async def playerTwo(self, interaction):
         if self.hasStarted:
-            return await interaction.response.send_message("This game has started, you can no longer bet on it.", ephemeral=True)
+            return await interaction.response.send_message("This game has started, you can no longer bet on it.",
+                                                           ephemeral=True)
 
         await interaction.response.send_modal(BetEntryForm(self.playerTwoName, self.setId))
         await self.update()
@@ -274,15 +287,23 @@ class BetView(discord.ui.View):
         con = sqlite3.connect('database.db')
         cur = con.cursor()
 
-        cur.execute('UPDATE sets SET messageId = ?, channelId = ? WHERE setId = ?', (message.id, message.channel.id, self.setId))
+        cur.execute('UPDATE sets SET messageId = ?, channelId = ? WHERE setId = ?',
+                    (message.id, message.channel.id, self.setId))
 
         con.commit()
         con.close()
-        await self.update()
+        await self.update(updateScoreboard=False)
 
     async def updateScore(self, playerOneScore, playerTwoScore):
         con = sqlite3.connect('database.db')
         cur = con.cursor()
+
+        cur.execute('SELECT playerOneScore,playerTwoScore FROM sets WHERE setId = ?', (self.setId,))
+        result = cur.fetchall()
+
+        if playerOneScore == result[0] and playerTwoScore == result[1]:
+            con.close()
+            return
 
         cur.execute('UPDATE sets SET playerOneScore = ?, playerTwoScore = ? WHERE setId = ?',
                     (playerOneScore, playerTwoScore, self.setId))
@@ -290,20 +311,25 @@ class BetView(discord.ui.View):
         con.close()
         await self.update()
 
-    async def startGame(self):
-        self.clear_items()
-        self.hasStarted = True
-        await self.update()
+    async def startGame(self, update=True):
+        if not self.hasStarted:
+            self.clear_items()
+            self.hasStarted = True
+            if update:
+                await self.update()
 
-    async def update(self):
-        global viewHelper
-        await viewHelper.update_leaderboard()
+    async def update(self, updateScoreboard=True):
+        if updateScoreboard:
+            await viewHelper.update_leaderboard()
+
         guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
 
         con = sqlite3.connect('database.db')
         cur = con.cursor()
 
-        cur.execute('SELECT messageId, channelId, setTitle, gameTitle, betsPlayerOne, betsPlayerTwo, scorePlayerOne, scorePlayerTwo FROM sets WHERE setId = ?', (self.setId,))
+        cur.execute(
+            'SELECT messageId, channelId, setTitle, gameTitle, betsPlayerOne, betsPlayerTwo, scorePlayerOne, scorePlayerTwo FROM sets WHERE setId = ?',
+            (self.setId,))
         result = cur.fetchall()[0]
 
         con.close()
@@ -324,22 +350,24 @@ class BetView(discord.ui.View):
         embed.add_field(name=' ᲼᲼ ', inline=True, value=f"{result[5]} Points")
         colors = discord_colorize.Colors()
 
-        totalBet = result[4]+result[5]
+        totalBet = result[4] + result[5]
         totalHashes = 52
 
         if result[4] > 0:
-            numPlayerOne = round((result[4]/totalBet)*totalHashes)
+            numPlayerOne = round((result[4] / totalBet) * totalHashes)
         else:
             numPlayerOne = 0
 
         if result[5] > 0:
-            numPlayerTwo = round((result[5]/totalBet)*totalHashes)
+            numPlayerTwo = round((result[5] / totalBet) * totalHashes)
         else:
             numPlayerTwo = 0
 
         numNone = 0 if result[4] + result[5] >= 1 else totalHashes
+
+        #Formatting looks weird but it is what it is
         progressBar = f"""```ansi
-{colors.colorize('𓃑'*numPlayerOne, fg='cyan')}{colors.colorize('𓃑'*numPlayerTwo, fg='blue')}{colors.colorize('𓃑'*numNone, fg='gray')}
+{colors.colorize('𓃑' * numPlayerOne, fg='cyan')}{colors.colorize('𓃑' * numPlayerTwo, fg='blue')}{colors.colorize('𓃑' * numNone, fg='gray')}
 ```
         """
         embed.add_field(name='', value=progressBar, inline=False)
@@ -349,10 +377,53 @@ class BetView(discord.ui.View):
 
         await message.edit(embed=embed)
 
+    async def endGame(self):
+        if not self.hasEnded:
+            self.hasEnded = True
+            con = sqlite3.connect('database.db')
+            cur = con.cursor()
+
+            cur.execute(
+                'SELECT betsPlayerOne, betsPlayerTwo, scorePlayerOne, scorePlayerTwo, namePlayerOne, namePlayerTwo, setTitle, gameTitle amount FROM sets WHERE setId = ?',
+                (self.setId,)
+            )
+            info = cur.fetchall()[0]
+            gameTitle = info[7]
+            setTitle = info[6]
+            playerOne = info[4]
+            playerTwo = info[5]
+
+            totalPayout = info[0] + info[1]
+
+            winner = 0 if info[2] > info[3] else 1
+
+            cur.execute(
+                'SELECT userId, winner, amount FROM sets WHERE setId = ?',
+                (self.setId,)
+            )
+            bets = cur.fetchall()
+
+            for bet in bets:
+                if bet[1] == winner:
+                    amount = bet[2]
+
+                    payout = (totalPayout / info[winner]) * amount
+
+                    if payout < amount*2:
+                        payout = amount*2
+
+                    await _give_points(bet[0], payout, False)
+                    guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+
+                    member = guild.get_member(bet[0]) if guild.get_member(bet[0]) is not None else await guild.fetch_member(bet[0])
+                    await member.send(f"You won {amount} from the bet placed on {escape_markdown(playerOne)} vs {escape_markdown(playerTwo)} (**{gameTitle}** - {setTitle})")
+
+            await viewHelper.update_leaderboard()
+
 
 @bot.event
 async def on_ready():
-    # await tree.sync(guild=discord.Object(id=guildId))
+    await tree.sync(guild=discord.Object(id=guildId))
     global viewHelper
 
     try:
@@ -371,6 +442,11 @@ async def on_ready():
         viewHelper = ViewHelperScoreboard(view, channelObject.id, messageId=message.id)
 
     await reconnectBetViews()
+
+    if os.path.exists("eventData.json"):
+        pass
+        # await updateGames()
+        # updateGames.start()
 
     print(f'Logged in as {bot.user.name}')
     print('------')
@@ -403,8 +479,10 @@ async def _transfer_points(fromMemberId, toMemberId, num):
     guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
     await _remove_points(fromMemberId, num, update=False)
     await _give_points(toMemberId, num)
-    toUser = guild.get_member(toMemberId) if guild.get_member(toMemberId) is not None else await guild.fetch_member(toMemberId)
-    fromUser = guild.get_member(fromMemberId) if guild.get_member(fromMemberId) is not None else await guild.fetch_member(fromMemberId)
+    toUser = guild.get_member(toMemberId) if guild.get_member(toMemberId) is not None else await guild.fetch_member(
+        toMemberId)
+    fromUser = guild.get_member(fromMemberId) if guild.get_member(
+        fromMemberId) is not None else await guild.fetch_member(fromMemberId)
     await toUser.send(f"{fromUser.display_name} has sent you {num} points!")
 
 
@@ -516,7 +594,7 @@ async def add_admin_role(interaction, role: discord.Role):
 
 @tree.command(name="remove-admin-role", description="Removes a role to the list from roles that count as admins",
               guild=discord.Object(id=guildId))
-async def add_admin_role(interaction, role: discord.Role):
+async def remove_admin_role(interaction, role: discord.Role):
     await interaction.response.defer(ephemeral=True)
     if not await _isAdmin(interaction.user.id):
         await interaction.followup.send(f"You do not have permission to use this command")
@@ -538,27 +616,182 @@ async def add_admin_role(interaction, role: discord.Role):
     await interaction.followup.send(f"Removed {role.name} from the admin list")
 
 
-@tree.command(name="test-create-bet", guild=discord.Object(id=guildId))
-async def createBet(interaction):
+@tree.command(name="setup-tournament", guild=discord.Object(id=guildId))
+async def setup_tournament(interaction, tournament_stub: str):
     await interaction.response.defer(ephemeral=True)
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
+    if not await _isAdmin(interaction.user.id):
+        await interaction.followup.send(f"You do not have permission to use this command")
+        return
 
-    cursor.execute('INSERT OR IGNORE INTO sets (setId, namePlayerOne, namePlayerTwo, setTitle, gameTitle) VALUES ("Test", "LongerNameTest", "LongerNameTest2", "final", "smnash bronther")')
+    guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
 
-    conn.commit()
-    conn.close()
+    con = sqlite3.connect('database.db')
+    cur = con.cursor()
+    for member in guild.members:
+        if not member.bot:
+            cur.execute('INSERT OR IGNORE INTO users (id) VALUES (?);', (member.id,))
+    con.commit()
+    con.close()
 
-    await interaction.followup.send(f"Working")
-    view = BetView("LongerNameTest", "LongerNameTest2", "Test")
+    await viewHelper.update_leaderboard()
 
-    message = await interaction.channel.send(embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")), view=view)
-    await view.updateMessageObject(message)
+    jsonData = {
+        "stub": tournament_stub
+    }
+
+    tournament = await get_tournament_info(tournament_stub)
+    category = await guild.create_category(tournament["name"])
+    jsonData["categoryId"] = category.id
+
+    for event in tournament["events"]:
+        name = event["name"]
+
+        # Strip the Main/Side/TT prefix
+        name = name[name.find(':') + 2:]
+        name = name.replace("+", " plus")
+
+        channel = await category.create_text_channel(name)
+        jsonData[event["id"]] = channel.id
+
+    updateGames.start()
+
+    eventDataFile = open("eventData.json", "w")
+    json.dump(jsonData, eventDataFile)
+    eventDataFile.close()
+    await interaction.followup.send(f"Tournament betting has been initialised")
+
+
+@tree.command(name="clear-tournament", guild=discord.Object(id=guildId))
+async def clear_tournament(interaction):
+    await interaction.response.defer(ephemeral=True)
+    if not await _isAdmin(interaction.user.id):
+        await interaction.followup.send(f"You do not have permission to use this command")
+        return
+
+    con = sqlite3.connect('database.db')
+    cur = con.cursor()
+
+    cur.execute("DELETE FROM sets")
+    cur.execute("DELETE FROM bets")
+    cur.execute("DELETE FROM users")
+
+    con.commit()
+    con.close()
+
+    if os.path.exists("eventData.json"):
+        guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+        with open("eventData.json") as data:
+            jsonData = json.load(data)
+            for k, v in jsonData.items():
+                if k == "stub":
+                    continue
+                channel = await guild.fetch_channel(v)
+                await channel.delete()
+        os.remove("eventData.json")
+
+    global viewHelper
+    await viewHelper.update_leaderboard()
+
+    await interaction.followup.send(f"Tournament has been reset")
+
+running = False
+async def run_blocking(blocking_func: typing.Callable, *args, **kwargs) -> typing.Any:
+    """Runs a blocking function in a non-blocking way"""
+    func = functools.partial(blocking_func, *args, **kwargs)
+    return await bot.loop.run_in_executor(None, func)
 
 @tasks.loop(seconds=60)
 async def updateGames():
-    for event in get_games("second-wind-2024"):
+    if not running:
+        await run_blocking(_updateGames)
 
 
+async def _updateGames():
+    global running
+    running = True
+    jsonFile = open("eventData.json")
+    jsonData = json.load(jsonFile)
+    jsonFile.close()
+
+    con = sqlite3.connect('database.db')
+    cur = con.cursor()
+    guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+    async for event in get_games(jsonData["stub"]):
+        channelId = jsonData[str(event["id"])]
+        channel = guild.get_channel(channelId) if guild.get_channel(
+            channelId) is not None else await guild.fetch_channel(channelId)
+        for phase in event["phases"]:
+            for phaseGroup in phase["phaseGroups"]["nodes"]:
+                for gameSet in phaseGroup["sets"]["nodes"]:
+                    if gameSet["slots"][0]["entrant"] is not None and gameSet["slots"][1]["entrant"] is not None:
+                        # print(f"Set Id: {gameSet["id"]}")
+                        # print(f"Channel Id: {channel.id}")
+                        # print(f"Player one name: {gameSet["slots"][0]["entrant"]["name"]}")
+                        # print(f"Player two name: {gameSet["slots"][1]["entrant"]["name"]}")
+                        # print(f"Set title: {gameSet["fullRoundText"]}")
+                        print(f"Game title: {channel.name}")
+                        # print(f"Phase name: {phase["name"]}")
+                        # print(f"PhaseGroup name: {phaseGroup["displayIdentifier"]}")
+                        pools = ["", "Pool 1", "Pool 2"]
+                        # Yuck
+                        fullPhaseName = phase["name"] if len(phase["phaseGroups"][
+                                                                 "nodes"]) < 2 else f"{phase["name"]} {pools[int(phaseGroup["displayIdentifier"])]}"
+                        gameFullTitle = f"{fullPhaseName}: {gameSet["fullRoundText"]}"
+                        # print(f"FullyQualifiedGameTitle: {gameFullTitle}")
+                        # print("")
+
+                        if gameSet["state"] == 1:
+                            cur.execute(f'SELECT * FROM sets WHERE setId = ?', (gameSet["id"],))
+                            result = cur.fetchall()
+
+                            if len(result) < 1:
+                                player1Name = gameSet["slots"][0]["entrant"]["name"]
+                                player2Name = gameSet["slots"][1]["entrant"]["name"]
+
+                                gameName = event["name"]
+                                gameName = gameName[gameName.find(':') + 2:]
+
+                                cur.execute(
+                                    'INSERT OR IGNORE INTO sets (setId, namePlayerOne, namePlayerTwo, setTitle, gameTitle) VALUES (?, ?, ?, ?, ?)',
+                                    (gameSet["id"], player1Name, player2Name, gameFullTitle, gameName)
+                                )
+                                con.commit()
+                                view = BetView(player1Name, player2Name, gameSet["id"])
+                                message = await channel.send(
+                                    embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")),
+                                    view=view)
+                                await view.updateMessageObject(message)
+                                betViews[gameSet["id"]] = view
+
+                        else:
+                            if gameSet["state"] == 2 or gameSet["state"] == 3:
+                                betViews[gameSet["id"]].startGame(update=False)
+                                scorePlayerOne = gameSet["slots"][0]["standing"]["stats"]["score"]["value"]
+                                scorePlayerTwo = gameSet["slots"][1]["standing"]["stats"]["score"]["value"]
+                                betViews[gameSet["id"]].updateScore(scorePlayerOne, scorePlayerTwo)
+                                if gameSet["state"] == 3:
+                                    betViews[gameSet["id"]].endGame()
+                                continue
+
+                            await betViews[gameSet["id"]].startGame()
+
+    running = False
+
+# @tree.command(name="test-create-bet", guild=discord.Object(id=guildId))
+# async def createBet(interaction):
+#     await interaction.response.defer(ephemeral=True)
+#     conn = sqlite3.connect('database.db')
+#     cursor = conn.cursor()
+#
+#     cursor.execute('INSERT OR IGNORE INTO sets (setId, namePlayerOne, namePlayerTwo, setTitle, gameTitle) VALUES ("Test", "LongerNameTest", "LongerNameTest2", "final", "smnash bronther")')
+#
+#     conn.commit()
+#     conn.close()
+#
+#     await interaction.followup.send(f"Working")
+#     view = BetView("LongerNameTest", "LongerNameTest2", "Test")
+#
+#     message = await interaction.channel.send(embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")), view=view)
+#     await view.updateMessageObject(message)
 
 bot.run(os.getenv("BOT_KEY"))

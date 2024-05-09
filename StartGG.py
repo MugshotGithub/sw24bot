@@ -1,5 +1,7 @@
 import json
 import os
+from typing import Any
+
 from gql import gql, Client
 from gql.transport.aiohttp import AIOHTTPTransport
 from dotenv import load_dotenv  # Python-dotenv package
@@ -32,6 +34,8 @@ eventInfoQuery = gql(
     """
     query EventQuery($id: ID!) {
         event(id: $id){
+            id
+            name
             phases {
                 name
                 phaseGroups {
@@ -41,7 +45,15 @@ eventInfoQuery = gql(
                             nodes {
                                 id
                                 fullRoundText
+                                state
                                 slots {
+                                    standing {
+                                        stats {
+                                            score {
+                                                value
+                                            }
+                                        }
+                                    }
                                     entrant {
                                         id
                                         name
@@ -62,9 +74,15 @@ eventInfoQuery = gql(
 # This should be used in a for loop.
 async def get_games(tournament):
     # Execute the query on the transport
-    result = client.execute(eventIdQuery, variable_values={"slug": tournament})
-    tournament = result["tournament"]
+    tournament = await get_tournament_info(tournament)
 
     for event in tournament["events"]:
-        eventInfo = client.execute(eventInfoQuery, variable_values={"id": event["id"]})
+        eventInfo = await client.execute_async(eventInfoQuery, variable_values={"id": event["id"]})
         yield eventInfo["event"]
+
+async def get_tournament_info(tournament):
+    result = await client.execute_async(eventIdQuery, variable_values={"slug": tournament})
+    return result["tournament"]
+
+
+
