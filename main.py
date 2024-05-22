@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import json
 import os
@@ -446,7 +447,7 @@ async def on_ready():
     if os.path.exists("eventData.json"):
         pass
         # await updateGames()
-        # updateGames.start()
+        updateGames.start()
 
     print(f'Logged in as {bot.user.name}')
     print('------')
@@ -695,15 +696,10 @@ async def clear_tournament(interaction):
     await interaction.followup.send(f"Tournament has been reset")
 
 running = False
-async def run_blocking(blocking_func: typing.Callable, *args, **kwargs) -> typing.Any:
-    """Runs a blocking function in a non-blocking way"""
-    func = functools.partial(blocking_func, *args, **kwargs)
-    return await bot.loop.run_in_executor(None, func)
-
 @tasks.loop(seconds=60)
 async def updateGames():
     if not running:
-        await run_blocking(_updateGames)
+        await _updateGames()
 
 
 async def _updateGames():
@@ -713,69 +709,76 @@ async def _updateGames():
     jsonData = json.load(jsonFile)
     jsonFile.close()
 
-    con = sqlite3.connect('database.db')
-    cur = con.cursor()
     guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+    eventUpdateTasks = []
     async for event in get_games(jsonData["stub"]):
-        channelId = jsonData[str(event["id"])]
-        channel = guild.get_channel(channelId) if guild.get_channel(
-            channelId) is not None else await guild.fetch_channel(channelId)
-        for phase in event["phases"]:
-            for phaseGroup in phase["phaseGroups"]["nodes"]:
-                for gameSet in phaseGroup["sets"]["nodes"]:
-                    if gameSet["slots"][0]["entrant"] is not None and gameSet["slots"][1]["entrant"] is not None:
-                        # print(f"Set Id: {gameSet["id"]}")
-                        # print(f"Channel Id: {channel.id}")
-                        # print(f"Player one name: {gameSet["slots"][0]["entrant"]["name"]}")
-                        # print(f"Player two name: {gameSet["slots"][1]["entrant"]["name"]}")
-                        # print(f"Set title: {gameSet["fullRoundText"]}")
-                        print(f"Game title: {channel.name}")
-                        # print(f"Phase name: {phase["name"]}")
-                        # print(f"PhaseGroup name: {phaseGroup["displayIdentifier"]}")
-                        pools = ["", "Pool 1", "Pool 2"]
-                        # Yuck
-                        fullPhaseName = phase["name"] if len(phase["phaseGroups"][
-                                                                 "nodes"]) < 2 else f"{phase["name"]} {pools[int(phaseGroup["displayIdentifier"])]}"
-                        gameFullTitle = f"{fullPhaseName}: {gameSet["fullRoundText"]}"
-                        # print(f"FullyQualifiedGameTitle: {gameFullTitle}")
-                        # print("")
+        eventUpdateTasks.append(_updateEvent(jsonData, event, guild))
 
-                        if gameSet["state"] == 1:
-                            cur.execute(f'SELECT * FROM sets WHERE setId = ?', (gameSet["id"],))
-                            result = cur.fetchall()
-
-                            if len(result) < 1:
-                                player1Name = gameSet["slots"][0]["entrant"]["name"]
-                                player2Name = gameSet["slots"][1]["entrant"]["name"]
-
-                                gameName = event["name"]
-                                gameName = gameName[gameName.find(':') + 2:]
-
-                                cur.execute(
-                                    'INSERT OR IGNORE INTO sets (setId, namePlayerOne, namePlayerTwo, setTitle, gameTitle) VALUES (?, ?, ?, ?, ?)',
-                                    (gameSet["id"], player1Name, player2Name, gameFullTitle, gameName)
-                                )
-                                con.commit()
-                                view = BetView(player1Name, player2Name, gameSet["id"])
-                                message = await channel.send(
-                                    embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")),
-                                    view=view)
-                                await view.updateMessageObject(message)
-                                betViews[gameSet["id"]] = view
-
-                        else:
-                            if gameSet["state"] == 2 or gameSet["state"] == 3:
-                                betViews[gameSet["id"]].startGame(update=False)
-                                scorePlayerOne = gameSet["slots"][0]["standing"]["stats"]["score"]["value"]
-                                scorePlayerTwo = gameSet["slots"][1]["standing"]["stats"]["score"]["value"]
-                                betViews[gameSet["id"]].updateScore(scorePlayerOne, scorePlayerTwo)
-                                if gameSet["state"] == 3:
-                                    betViews[gameSet["id"]].endGame()
-                                continue
-
-                            await betViews[gameSet["id"]].startGame()
+    eventCoroutines = asyncio.gather(*eventUpdateTasks)
+    await eventCoroutines
 
     running = False
+
+async def _updateEvent(jsonData, event, guild):
+    con = sqlite3.connect('database.db')
+    cur = con.cursor()
+    channelId = jsonData[str(event["id"])]
+    channel = guild.get_channel(channelId) if guild.get_channel(
+        channelId) is not None else await guild.fetch_channel(channelId)
+    for phase in event["phases"]:
+        for phaseGroup in phase["phaseGroups"]["nodes"]:
+            for gameSet in phaseGroup["sets"]["nodes"]:
+                if gameSet["slots"][0]["entrant"] is not None and gameSet["slots"][1]["entrant"] is not None:
+                    # print(f"Set Id: {gameSet["id"]}")
+                    # print(f"Channel Id: {channel.id}")
+                    # print(f"Player one name: {gameSet["slots"][0]["entrant"]["name"]}")
+                    # print(f"Player two name: {gameSet["slots"][1]["entrant"]["name"]}")
+                    # print(f"Set title: {gameSet["fullRoundText"]}")
+                    print(f"Game title: {channel.name}")
+                    # print(f"Phase name: {phase["name"]}")
+                    # print(f"PhaseGroup name: {phaseGroup["displayIdentifier"]}")
+                    pools = ["", "Pool 1", "Pool 2"]
+                    # Yuck
+                    fullPhaseName = phase["name"] if len(phase["phaseGroups"][
+                                                             "nodes"]) < 2 else f"{phase["name"]} {pools[int(phaseGroup["displayIdentifier"])]}"
+                    gameFullTitle = f"{fullPhaseName}: {gameSet["fullRoundText"]}"
+                    # print(f"FullyQualifiedGameTitle: {gameFullTitle}")
+                    # print("")
+
+                    if gameSet["state"] == 1:
+                        cur.execute(f'SELECT * FROM sets WHERE setId = ?', (gameSet["id"],))
+                        result = cur.fetchall()
+
+                        if len(result) < 1:
+                            player1Name = gameSet["slots"][0]["entrant"]["name"]
+                            player2Name = gameSet["slots"][1]["entrant"]["name"]
+
+                            gameName = event["name"]
+                            gameName = gameName[gameName.find(':') + 2:]
+
+                            cur.execute(
+                                'INSERT OR IGNORE INTO sets (setId, namePlayerOne, namePlayerTwo, setTitle, gameTitle) VALUES (?, ?, ?, ?, ?)',
+                                (gameSet["id"], player1Name, player2Name, gameFullTitle, gameName)
+                            )
+                            con.commit()
+                            view = BetView(player1Name, player2Name, gameSet["id"])
+                            message = await channel.send(
+                                embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")),
+                                view=view)
+                            await view.updateMessageObject(message)
+                            betViews[gameSet["id"]] = view
+
+                    else:
+                        if gameSet["state"] == 2 or gameSet["state"] == 3:
+                            betViews[gameSet["id"]].startGame(update=False)
+                            scorePlayerOne = gameSet["slots"][0]["standing"]["stats"]["score"]["value"]
+                            scorePlayerTwo = gameSet["slots"][1]["standing"]["stats"]["score"]["value"]
+                            betViews[gameSet["id"]].updateScore(scorePlayerOne, scorePlayerTwo)
+                            if gameSet["state"] == 3:
+                                betViews[gameSet["id"]].endGame()
+                            continue
+
+                        await betViews[gameSet["id"]].startGame()
 
 # @tree.command(name="test-create-bet", guild=discord.Object(id=guildId))
 # async def createBet(interaction):
