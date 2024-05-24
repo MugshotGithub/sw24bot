@@ -158,7 +158,7 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
         try:
             betAmount = int(betAmount)
         except ValueError:
-            await interaction.followup.send(f"Failed to bet, {self.bet.value} is not recognised as a number")
+            await interaction.followup.send(f"Failed to bet, {self.bet.value} is not recognised as a number", ephemeral=True)
             return
 
         if betAmount == 0:
@@ -174,8 +174,8 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
         betsMatching = cur.fetchall()
         if len(betsMatching) > 0:
             if betsMatching[0][1] != self.playerBetOn:
-                print(betsMatching[0][1])
-                print(self.playerBetOn)
+                # print(betsMatching[0][1])
+                # print(self.playerBetOn)
                 await interaction.followup.send(
                     f"You cannot bet on {self.playerBetOn} as you have already bet on {betsMatching[0][1]}",
                     ephemeral=True)
@@ -226,6 +226,8 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
         con.commit()
 
         con.close()
+
+        await addToAuditLog(f"{interaction.user.display_name} bet {betAmount} on {self.playerBetOn} in the set {result[8]}: {result[7]}")
 
         global betViews
         await betViews[self.setId].update()
@@ -316,6 +318,7 @@ class BetView(discord.ui.View):
         if not self.hasStarted:
             self.clear_items()
             self.hasStarted = True
+            await addToAuditLog(f"{self.setId} has started")
             if update:
                 await self.update()
 
@@ -456,24 +459,26 @@ async def on_ready():
         await viewHelper.update_leaderboard()
 
 
-@tree.command(name="give-points", description="Gives a user points", guild=discord.Object(id=guildId))
+@tree.command(name="give-points", description="Admin command to give a user points", guild=discord.Object(id=guildId))
 async def give_points(interaction, member: discord.Member, points: int):
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     if not await _isAdmin(interaction.user.id):
         await interaction.followup.send(f"You do not have permission to use this command")
         return
+    await addToAuditLog(f"{interaction.user.display_name} (ADMIN) granted {points} points to {member.display_name} ")
     await _give_points(member.id, points)
     await interaction.followup.send(f"Added {points} points to {member.display_name}")
 
 
-@tree.command(name="remove-points", description="Removes a user's points", guild=discord.Object(id=guildId))
+@tree.command(name="remove-points", description="Admin command to remove a user's points", guild=discord.Object(id=guildId))
 async def remove_points(interaction, member: discord.Member, points: int):
     await interaction.response.defer(ephemeral=True)
     if not await _isAdmin(interaction.user.id):
         await interaction.followup.send(f"You do not have permission to use this command")
         return
+    await addToAuditLog(f"{interaction.user.display_name} (ADMIN) removed {points} points from {member.display_name} ")
     await _remove_points(member.id, points)
-    await interaction.followup.send(f"Added {points} points to {member.display_name}")
+    await interaction.followup.send(f"Removed {points} points from {member.display_name}")
 
 
 async def _transfer_points(fromMemberId, toMemberId, num):
@@ -491,6 +496,7 @@ async def _transfer_points(fromMemberId, toMemberId, num):
               guild=discord.Object(id=guildId))
 async def transfer_points(interaction, member: discord.Member, points: int):
     await interaction.response.defer(ephemeral=True)
+    await addToAuditLog(f"{interaction.user.display_name} sent {member.display_name} {points} points")
     await _transfer_points(interaction.user.id, member.id, points)
     await interaction.followup.send(f"Sent {member.display_name} {points} points!")
 
@@ -499,6 +505,7 @@ async def transfer_points(interaction, member: discord.Member, points: int):
               guild=discord.Object(id=guildId))
 async def pay_member(interaction, member: discord.Member, points: int):
     await interaction.response.defer(ephemeral=True)
+    await addToAuditLog(f"{interaction.user.display_name} sent {member.display_name} {points} points")
     await _transfer_points(interaction.user.id, member.id, points)
     await interaction.followup.send(f"Sent {member.display_name} {points} points!")
 
@@ -535,6 +542,13 @@ async def add_admin_user(interaction, member: discord.Member):
         await interaction.followup.send(f"You do not have permission to use this command")
         return
 
+    if os.path.exists("eventData.json"):
+        guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+        with open("eventData.json") as data:
+            jsonData = json.load(data)
+            channel = guild.get_channel(jsonData["auditId"]) if guild.get_channel(jsonData["auditId"]) is not None else await guild.fetch_channel(jsonData["auditId"])
+            await channel.set_permissions(member, read_messages=True)
+
     adminFile = open("admins.json")
     adminData = json.load(adminFile)
 
@@ -555,6 +569,13 @@ async def remove_admin_user(interaction, member: discord.Member):
     if not await _isAdmin(interaction.user.id):
         await interaction.followup.send(f"You do not have permission to use this command")
         return
+
+    if os.path.exists("eventData.json"):
+        guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+        with open("eventData.json") as data:
+            jsonData = json.load(data)
+            channel = guild.get_channel(jsonData["auditId"]) if guild.get_channel(jsonData["auditId"]) is not None else await guild.fetch_channel(jsonData["auditId"])
+            await channel.set_permissions(member, read_messages=False)
 
     adminFile = open("admins.json")
     adminData = json.load(adminFile)
@@ -580,6 +601,13 @@ async def add_admin_role(interaction, role: discord.Role):
         await interaction.followup.send(f"You do not have permission to use this command")
         return
 
+    if os.path.exists("eventData.json"):
+        guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+        with open("eventData.json") as data:
+            jsonData = json.load(data)
+            channel = guild.get_channel(jsonData["auditId"]) if guild.get_channel(jsonData["auditId"]) is not None else await guild.fetch_channel(jsonData["auditId"])
+            await channel.set_permissions(role, read_messages=True)
+
     adminFile = open("admins.json")
     adminData = json.load(adminFile)
 
@@ -600,6 +628,13 @@ async def remove_admin_role(interaction, role: discord.Role):
     if not await _isAdmin(interaction.user.id):
         await interaction.followup.send(f"You do not have permission to use this command")
         return
+
+    if os.path.exists("eventData.json"):
+        guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+        with open("eventData.json") as data:
+            jsonData = json.load(data)
+            channel = guild.get_channel(jsonData["auditId"]) if guild.get_channel(jsonData["auditId"]) is not None else await guild.fetch_channel(jsonData["auditId"])
+            await channel.set_permissions(role, read_messages=False)
 
     adminFile = open("admins.json")
     adminData = json.load(adminFile)
@@ -643,6 +678,24 @@ async def setup_tournament(interaction, tournament_stub: str):
     tournament = await get_tournament_info(tournament_stub)
     category = await guild.create_category(tournament["name"])
     jsonData["categoryId"] = category.id
+
+    auditLog = await category.create_text_channel("audit-log")
+
+    await auditLog.set_permissions(guild.default_role, read_messages=False, send_messages=False)
+
+    adminFile = open("admins.json")
+    adminData = json.load(adminFile)
+    adminFile.close()
+
+    for roleId in adminData["roles"]:
+        role = guild.get_role(roleId)
+        await auditLog.set_permissions(role, read_messages=True)
+
+    for memberId in adminData["users"]:
+        member = guild.get_member(memberId) if guild.get_member(memberId) is not None else await guild.fetch_member(memberId)
+        await auditLog.set_permissions(member, read_messages=True)
+
+    jsonData["auditId"] = auditLog.id
 
     for event in tournament["events"]:
         name = event["name"]
@@ -692,7 +745,7 @@ async def clear_tournament(interaction):
 
     global viewHelper
     await viewHelper.update_leaderboard()
-
+    updateGames.stop()
     await interaction.followup.send(f"Tournament has been reset")
 
 running = False
@@ -796,5 +849,15 @@ async def _updateEvent(jsonData, event, guild):
 #
 #     message = await interaction.channel.send(embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")), view=view)
 #     await view.updateMessageObject(message)
+
+async def addToAuditLog(message):
+    if os.path.exists("eventData.json"):
+        guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
+        with open("eventData.json") as data:
+            jsonData = json.load(data)
+            channel = guild.get_channel(jsonData["auditId"]) if guild.get_channel(jsonData["auditId"]) is not None else await guild.fetch_channel(jsonData["auditId"])
+            await channel.send(message)
+
+
 
 bot.run(os.getenv("BOT_KEY"))
