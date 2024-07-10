@@ -222,6 +222,8 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
         else:
             cur.execute('UPDATE bets SET amount = amount + ? WHERE setId = ? AND userId = ?',
                         (betAmount, self.setId, interaction.user.id))
+            cur.execute('SELECT points FROM users WHERE id = ?', (interaction.user.id,))
+            numPoints = cur.fetchall()[0][0]
             await interaction.followup.send(
 
                 f"Bet an extra {betAmount} WindCoin{"s" if betAmount > 1 else ""} on {self.playerBetOn}. Your total bet is now {betsMatching[0][0] + betAmount}. Your remaining balance is now {numPoints}",
