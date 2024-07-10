@@ -3,6 +3,7 @@ import functools
 import json
 import os
 import re
+import time
 import typing
 
 import discord
@@ -52,24 +53,20 @@ async def _isAdmin(userId):
 
 
 async def _remove_points(userId, points, update=True):
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('database.db', autocommit=True)
     cursor = conn.cursor()
-    cursor.execute('BEGIN TRANSACTION;')
     cursor.execute('INSERT OR IGNORE INTO users (id) VALUES (?);', (userId,))
     cursor.execute('UPDATE users SET points = points - ? WHERE id = ?;', (points, userId))
-    conn.commit()
     conn.close()
     if update:
         await viewHelper.update_leaderboard()
 
 
 async def _give_points(userId, points, update=True):
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('database.db', autocommit=True)
     cursor = conn.cursor()
-    cursor.execute('BEGIN TRANSACTION;')
     cursor.execute('INSERT OR IGNORE INTO users (id) VALUES (?);', (userId,))
     cursor.execute('UPDATE users SET points = points + ? WHERE id = ?;', (points, userId))
-    conn.commit()
     conn.close()
     if update:
         await viewHelper.update_leaderboard()
@@ -116,18 +113,19 @@ class ViewHelperScoreboard:
         self.messageId = messageId
         self.embed = discord.Embed(title="Live Leaderboard", colour=discord.Colour.from_str("#F60143"))
         self.indexOfField = 1
+        self.lastUpdate = time.time()
 
     async def update_leaderboard(self):
-        channel = await bot.fetch_channel(self.channelId)
-        message = await channel.fetch_message(self.messageId)
+        if time.time() - self.lastUpdate > 60:
+            channel = await bot.fetch_channel(self.channelId)
+            message = await channel.fetch_message(self.messageId)
 
-        self.embed = discord.Embed(title="Live Leaderboard", colour=discord.Colour.from_str("#F60143"))
-        self.embed.add_field(name="Points", inline=False, value=__format_leaderboard__(await _get_leaderboard()))
-        self.embed.add_field(name="Bets won", inline=False,
-                             value=__format_leaderboard__(await _get_leaderboard("betsWon")))
-        self.embed.set_footer(text=f"Last Updated at {datetime.now().strftime('%m/%d %H:%M:%S')} NZST")
+            self.embed = discord.Embed(title="Live Leaderboard", colour=discord.Colour.from_str("#F60143"))
+            self.embed.add_field(name="WindCoin", inline=False, value=__format_leaderboard__(await _get_leaderboard()))
+            self.embed.set_footer(text=f"Last Updated at {datetime.now().strftime('%m/%d %H:%M:%S')} NZST")
 
-        await message.edit(embed=self.embed)
+            await message.edit(embed=self.embed)
+            self.lastUpdate = time.time()
 
     async def post_view(self):
         channel = await bot.fetch_channel(self.channelId)
@@ -162,22 +160,28 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
             return
 
         if betAmount == 0:
-            await interaction.followup.send(f"You cannot bet 0 points", ephemeral=True)
+            await interaction.followup.send(f"You cannot bet 0 WindCoin", ephemeral=True)
             return
 
-        con = sqlite3.connect('database.db')
+        con = sqlite3.connect('database.db', autocommit=True)
         cur = con.cursor()
 
         cur.execute('INSERT OR IGNORE INTO users (id) VALUES (?);', (interaction.user.id,))
 
         cur.execute('SELECT amount,winner FROM bets WHERE setId = ? AND userId = ?', (self.setId, interaction.user.id))
         betsMatching = cur.fetchall()
+
         if len(betsMatching) > 0:
-            if betsMatching[0][1] != self.playerBetOn:
+            cur.execute('SELECT namePlayerOne,namePlayerTwo FROM sets WHERE setId = ?',
+                        (self.setId,))
+            players = cur.fetchall()[0]
+
+            playerBetOn = players[betsMatching[0][1]]
+            if playerBetOn != self.playerBetOn:
                 # print(betsMatching[0][1])
                 # print(self.playerBetOn)
                 await interaction.followup.send(
-                    f"You cannot bet on {self.playerBetOn} as you have already bet on {betsMatching[0][1]}",
+                    f"You cannot bet on {self.playerBetOn} as you have already bet on {playerBetOn}",
                     ephemeral=True)
                 con.close()
                 return
@@ -192,7 +196,6 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
             return
 
         cur.execute('UPDATE users SET points = points - ? WHERE id = ?', (betAmount, interaction.user.id))
-        con.commit()
 
         cur.execute('SELECT * FROM sets WHERE setId = ?', (self.setId,))
         result = cur.fetchall()[0]
@@ -208,22 +211,21 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
         queryVarBet = f"betsPlayer{playerBet}"
 
         cur.execute(f'UPDATE sets SET {queryVarBet} = {queryVarBet} + ? WHERE setId = ?', (betAmount, self.setId))
-        con.commit()
 
         if len(betsMatching) == 0:
             cur.execute('INSERT INTO bets (userId, setId, winner, amount) VALUES (?, ?, ?, ?);',
                         (interaction.user.id, self.setId, indexBet, betAmount))
+            cur.execute('SELECT points FROM users WHERE id = ?', (interaction.user.id,))
+            numPoints = cur.fetchall()[0][0]
             await interaction.followup.send(
-                f"Bet {betAmount} point{"s" if betAmount > 1 else ""} on {self.playerBetOn}", ephemeral=True)
+                f"Bet {betAmount} WindCoin{"s" if betAmount > 1 else ""} on {self.playerBetOn}. Your balance is now {numPoints}", ephemeral=True)
         else:
             cur.execute('UPDATE bets SET amount = amount + ? WHERE setId = ? AND userId = ?',
                         (betAmount, self.setId, interaction.user.id))
             await interaction.followup.send(
 
-                f"Bet an extra {betAmount} point{"s" if betAmount > 1 else ""} on {self.playerBetOn}. Your total bet is now {betsMatching[0][0] + betAmount}",
+                f"Bet an extra {betAmount} WindCoin{"s" if betAmount > 1 else ""} on {self.playerBetOn}. Your total bet is now {betsMatching[0][0] + betAmount}. Your remaining balance is now {numPoints}",
                 ephemeral=True)
-
-        con.commit()
 
         con.close()
 
@@ -243,20 +245,22 @@ async def reconnectBetViews():
     con.close()
 
     for betSet in sets:
-        view = BetView(betSet[5], betSet[6], betSet[0])
-        betViews[betSet[0]] = view
-        bot.add_view(view)
+        if betSet[13] != 1:
+            view = BetView(betSet[5], betSet[6], betSet[0], betSet[11], betSet[12] == 1)
+            betViews[betSet[0]] = view
+            bot.add_view(view)
 
 
 class BetView(discord.ui.View):
-    def __init__(self, playerOneName, playerTwoName, setId):
+    def __init__(self, playerOneName, playerTwoName, setId, timestamp, started=False, ended=False):
         super().__init__(timeout=None)
         self.playerOneName = playerOneName
         self.playerTwoName = playerTwoName
         self.setId = setId
         self.timeout = None
-        self.hasStarted = False
-        self.hasEnded = False
+        self.hasStarted = started
+        self.hasEnded = ended
+        self.timeStarted = timestamp
 
         playerOneButton = discord.ui.Button(label=f'Bet for {self.playerOneName} to win',
                                             style=discord.ButtonStyle.green,
@@ -287,35 +291,48 @@ class BetView(discord.ui.View):
         await self.update()
 
     async def updateMessageObject(self, message: discord.Message):
-        con = sqlite3.connect('database.db')
+        con = sqlite3.connect('database.db', autocommit=True)
         cur = con.cursor()
 
         cur.execute('UPDATE sets SET messageId = ?, channelId = ? WHERE setId = ?',
                     (message.id, message.channel.id, self.setId))
 
-        con.commit()
         con.close()
         await self.update(updateScoreboard=False)
 
     async def updateScore(self, playerOneScore, playerTwoScore):
-        con = sqlite3.connect('database.db')
+
+        con = sqlite3.connect('database.db', autocommit=True)
         cur = con.cursor()
 
-        cur.execute('SELECT playerOneScore,playerTwoScore FROM sets WHERE setId = ?', (self.setId,))
+        if type(playerOneScore) is not int:
+            playerOneScore = 0
+
+        if type(playerTwoScore) is not int:
+            playerTwoScore = 0
+
+        if not self.hasStarted and playerOneScore + playerTwoScore > 0:
+            await self.startGame(override=True)
+
+        cur.execute('SELECT scorePlayerOne,scorePlayerTwo FROM sets WHERE setId = ?', (self.setId,))
         result = cur.fetchall()
 
         if playerOneScore == result[0] and playerTwoScore == result[1]:
             con.close()
             return
 
-        cur.execute('UPDATE sets SET playerOneScore = ?, playerTwoScore = ? WHERE setId = ?',
+        cur.execute('UPDATE sets SET scorePlayerOne = ?, scorePlayerTwo = ? WHERE setId = ?',
                     (playerOneScore, playerTwoScore, self.setId))
-        con.commit()
         con.close()
         await self.update()
 
-    async def startGame(self, update=True):
-        if not self.hasStarted:
+    async def startGame(self, update=True, override=False):
+        if not self.hasStarted and ((round(time.time()) - self.timeStarted) > 120 or override):
+            con = sqlite3.connect('database.db', autocommit=True)
+            cur = con.cursor()
+            cur.execute('UPDATE sets SET started = 1 WHERE setId = ?', (self.setId,))
+            con.close()
+
             self.clear_items()
             self.hasStarted = True
             await addToAuditLog(f"{self.setId} has started")
@@ -349,9 +366,9 @@ class BetView(discord.ui.View):
         embed.add_field(name=discord.utils.escape_markdown(self.playerTwoName), inline=True, value=result[7])
         embed.add_field(name='', inline=False, value='')
 
-        embed.add_field(name='Bets total', inline=True, value=f"{result[4]} Points")
+        embed.add_field(name='Bets total', inline=True, value=f"{result[4]} WindCoin")
         embed.add_field(name='', inline=True, value='')
-        embed.add_field(name=' ᲼᲼ ', inline=True, value=f"{result[5]} Points")
+        embed.add_field(name=' ᲼᲼ ', inline=True, value=f"{result[5]} WindCoin")
         colors = discord_colorize.Colors()
 
         totalBet = result[4] + result[5]
@@ -378,14 +395,19 @@ class BetView(discord.ui.View):
 
         if self.hasStarted:
             embed.set_footer(text="Game has started, Betting no longer allowed")
+            await message.edit(embed=embed, view=None)
+            return
 
         await message.edit(embed=embed)
 
     async def endGame(self):
         if not self.hasEnded:
             self.hasEnded = True
-            con = sqlite3.connect('database.db')
+            await self.update()
+            con = sqlite3.connect('database.db', autocommit=True)
             cur = con.cursor()
+
+            cur.execute('UPDATE sets SET ended = 1 WHERE setId = ?', (self.setId,))
 
             cur.execute(
                 'SELECT betsPlayerOne, betsPlayerTwo, scorePlayerOne, scorePlayerTwo, namePlayerOne, namePlayerTwo, setTitle, gameTitle amount FROM sets WHERE setId = ?',
@@ -402,13 +424,14 @@ class BetView(discord.ui.View):
             winner = 0 if info[2] > info[3] else 1
 
             cur.execute(
-                'SELECT userId, winner, amount FROM sets WHERE setId = ?',
+                'SELECT userId, winner, amount FROM bets WHERE setId = ?',
                 (self.setId,)
             )
             bets = cur.fetchall()
 
             for bet in bets:
                 if bet[1] == winner:
+
                     amount = bet[2]
 
                     payout = (totalPayout / info[winner]) * amount
@@ -417,10 +440,17 @@ class BetView(discord.ui.View):
                         payout = amount*2
 
                     await _give_points(bet[0], payout, False)
+
+                    cur.execute(
+                        'SELECT points FROM users WHERE id = ?',
+                        (bet[0],)
+                    )
+                    bal = cur.fetchall()[0][0]
                     guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
 
                     member = guild.get_member(bet[0]) if guild.get_member(bet[0]) is not None else await guild.fetch_member(bet[0])
-                    await member.send(f"You won {amount} from the bet placed on {escape_markdown(playerOne)} vs {escape_markdown(playerTwo)} (**{gameTitle}** - {setTitle})")
+                    await member.send(f"You won {amount} WindCoin from the bet placed on {escape_markdown(playerOne)} vs {escape_markdown(playerTwo)} (**{gameTitle}** - {setTitle}) \nYour total is now {bal}")
+
 
             await viewHelper.update_leaderboard()
 
@@ -518,6 +548,20 @@ async def post_leaderboard(interaction):
         leaderboard += f"\n* {member.display_name}: {points}"
     await interaction.followup.send(leaderboard)
 
+@tree.command(name="balance", description="Gets your balance", guild=discord.Object(id=guildId))
+async def post_leaderboard(interaction):
+    await interaction.response.defer(ephemeral=True)
+    con = sqlite3.connect('database.db')
+    cur = con.cursor()
+    cur.execute('SELECT points FROM users WHERE id = ?', (interaction.user.id,))
+    results = cur.fetchall()
+    con.close()
+
+    if len(results) < 1:
+        await interaction.followup.send("No record found")
+        return
+
+    await interaction.followup.send(f"You have {results[0][0]} points")
 
 @tree.command(name="create-live-leaderboard", description="Create the live leaderboard",
               guild=discord.Object(id=guildId))
@@ -661,12 +705,11 @@ async def setup_tournament(interaction, tournament_stub: str):
 
     guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
 
-    con = sqlite3.connect('database.db')
+    con = sqlite3.connect('database.db', autocommit=True)
     cur = con.cursor()
     for member in guild.members:
         if not member.bot:
             cur.execute('INSERT OR IGNORE INTO users (id) VALUES (?);', (member.id,))
-    con.commit()
     con.close()
 
     await viewHelper.update_leaderboard()
@@ -701,10 +744,12 @@ async def setup_tournament(interaction, tournament_stub: str):
         name = event["name"]
 
         # Strip the Main/Side/TT prefix
-        name = name[name.find(':') + 2:]
+        if ':' in name:
+            name = name[name.find(':') + 2:]
         name = name.replace("+", " plus")
 
         channel = await category.create_text_channel(name)
+        await channel.set_permissions(guild.default_role, read_messages=True, send_messages=False)
         jsonData[event["id"]] = channel.id
 
     updateGames.start()
@@ -722,14 +767,13 @@ async def clear_tournament(interaction):
         await interaction.followup.send(f"You do not have permission to use this command")
         return
 
-    con = sqlite3.connect('database.db')
+    con = sqlite3.connect('database.db', autocommit=True)
     cur = con.cursor()
 
     cur.execute("DELETE FROM sets")
     cur.execute("DELETE FROM bets")
     cur.execute("DELETE FROM users")
 
-    con.commit()
     con.close()
 
     if os.path.exists("eventData.json"):
@@ -751,6 +795,7 @@ async def clear_tournament(interaction):
 running = False
 @tasks.loop(seconds=60)
 async def updateGames():
+    await viewHelper.update_leaderboard()
     if not running:
         await _updateGames()
 
@@ -772,8 +817,51 @@ async def _updateGames():
 
     running = False
 
+async def resetSet(guild, event, jsonData, gameSet, messageText="resetting bet"):
+    con = sqlite3.connect('database.db', autocommit=True)
+    cur = con.cursor()
+    channelId = jsonData[str(event["id"])]
+    channel = guild.get_channel(channelId) if guild.get_channel(channelId) is not None else await guild.fetch_channel(channelId)
+
+    cur.execute(
+        'SELECT messageId, channelId FROM sets WHERE setId = ?',
+        (gameSet["id"],)
+    )
+
+    result = cur.fetchall()[0]
+
+    channel = guild.get_channel(result[1])
+    if channel is None:
+        channel = await guild.fetch_channel(result[1])
+
+    message = await channel.fetch_message(result[0])
+
+    await message.delete()
+
+    del betViews[gameSet["id"]]
+    cur.execute(
+        'DELETE FROM sets WHERE setId = ?',
+        (gameSet["id"],)
+    )
+    cur.execute(
+        'SELECT * FROM bets WHERE setId = ?',
+        (gameSet["id"],)
+    )
+    betsToRefund = cur.fetchall()
+    cur.execute(
+        'DELETE FROM bets WHERE setId = ?',
+        (gameSet["id"],)
+    )
+    for bet in betsToRefund:
+        user = bet[0]
+        amount = bet[3]
+        await _give_points(user, amount)
+
+    await addToAuditLog(f"{gameSet["id"]} has been reset, {messageText}")
+    con.close()
+
 async def _updateEvent(jsonData, event, guild):
-    con = sqlite3.connect('database.db')
+    con = sqlite3.connect('database.db', autocommit=True)
     cur = con.cursor()
     channelId = jsonData[str(event["id"])]
     channel = guild.get_channel(channelId) if guild.get_channel(
@@ -787,18 +875,29 @@ async def _updateEvent(jsonData, event, guild):
                     # print(f"Player one name: {gameSet["slots"][0]["entrant"]["name"]}")
                     # print(f"Player two name: {gameSet["slots"][1]["entrant"]["name"]}")
                     # print(f"Set title: {gameSet["fullRoundText"]}")
-                    print(f"Game title: {channel.name}")
+                    # print(f"Game title: {channel.name}")
                     # print(f"Phase name: {phase["name"]}")
                     # print(f"PhaseGroup name: {phaseGroup["displayIdentifier"]}")
-                    pools = ["", "Pool 1", "Pool 2"]
+                    pools = ["", "Pool 1", "Pool 2", "Pool 3", "Pool 4", "Pool 5"]
                     # Yuck
                     fullPhaseName = phase["name"] if len(phase["phaseGroups"][
                                                              "nodes"]) < 2 else f"{phase["name"]} {pools[int(phaseGroup["displayIdentifier"])]}"
                     gameFullTitle = f"{fullPhaseName}: {gameSet["fullRoundText"]}"
                     # print(f"FullyQualifiedGameTitle: {gameFullTitle}")
                     # print("")
+                    gameSetCreated = gameSet["id"] in betViews.keys()
 
-                    if gameSet["state"] == 1:
+                    if not gameSetCreated and gameSet["state"] == 3:
+                        continue
+
+                    if gameSetCreated:
+                        player1Name = gameSet["slots"][0]["entrant"]["name"]
+                        player2Name = gameSet["slots"][1]["entrant"]["name"]
+                        betView = betViews[gameSet["id"]]
+                        if player1Name != betView.playerOneName or player2Name != betView.playerTwoName:
+                            await resetSet(guild, event, jsonData, gameSet, "Names of players do not match cached names")
+
+                    else:
                         cur.execute(f'SELECT * FROM sets WHERE setId = ?', (gameSet["id"],))
                         result = cur.fetchall()
 
@@ -807,48 +906,34 @@ async def _updateEvent(jsonData, event, guild):
                             player2Name = gameSet["slots"][1]["entrant"]["name"]
 
                             gameName = event["name"]
-                            gameName = gameName[gameName.find(':') + 2:]
-
+                            if ':' in gameName:
+                                gameName = gameName[gameName.find(':') + 2:]
+                            timestamp = round(time.time())
                             cur.execute(
-                                'INSERT OR IGNORE INTO sets (setId, namePlayerOne, namePlayerTwo, setTitle, gameTitle) VALUES (?, ?, ?, ?, ?)',
-                                (gameSet["id"], player1Name, player2Name, gameFullTitle, gameName)
+                                'INSERT OR IGNORE INTO sets (setId, namePlayerOne, namePlayerTwo, setTitle, gameTitle, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+                                (gameSet["id"], player1Name, player2Name, gameFullTitle, gameName, timestamp)
                             )
-                            con.commit()
-                            view = BetView(player1Name, player2Name, gameSet["id"])
+                            view = BetView(player1Name, player2Name, gameSet["id"], timestamp)
                             message = await channel.send(
                                 embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")),
                                 view=view)
                             await view.updateMessageObject(message)
                             betViews[gameSet["id"]] = view
 
-                    else:
-                        if gameSet["state"] == 2 or gameSet["state"] == 3:
-                            betViews[gameSet["id"]].startGame(update=False)
-                            scorePlayerOne = gameSet["slots"][0]["standing"]["stats"]["score"]["value"]
-                            scorePlayerTwo = gameSet["slots"][1]["standing"]["stats"]["score"]["value"]
-                            betViews[gameSet["id"]].updateScore(scorePlayerOne, scorePlayerTwo)
-                            if gameSet["state"] == 3:
-                                betViews[gameSet["id"]].endGame()
-                            continue
-
+                    if gameSet["state"] == 2 or gameSet["state"] == 3:
+                        await betViews[gameSet["id"]].startGame(update=False)
+                        scorePlayerOne = gameSet["slots"][0]["standing"]["stats"]["score"]["value"]
+                        scorePlayerTwo = gameSet["slots"][1]["standing"]["stats"]["score"]["value"]
+                        await betViews[gameSet["id"]].updateScore(scorePlayerOne, scorePlayerTwo)
+                    if gameSet["state"] == 3:
+                        await betViews[gameSet["id"]].endGame()
+                        continue
+                    if gameSet["state"] == 6:
                         await betViews[gameSet["id"]].startGame()
 
-# @tree.command(name="test-create-bet", guild=discord.Object(id=guildId))
-# async def createBet(interaction):
-#     await interaction.response.defer(ephemeral=True)
-#     conn = sqlite3.connect('database.db')
-#     cursor = conn.cursor()
-#
-#     cursor.execute('INSERT OR IGNORE INTO sets (setId, namePlayerOne, namePlayerTwo, setTitle, gameTitle) VALUES ("Test", "LongerNameTest", "LongerNameTest2", "final", "smnash bronther")')
-#
-#     conn.commit()
-#     conn.close()
-#
-#     await interaction.followup.send(f"Working")
-#     view = BetView("LongerNameTest", "LongerNameTest2", "Test")
-#
-#     message = await interaction.channel.send(embed=discord.Embed(title="Working...", colour=discord.Colour.from_str("#F60143")), view=view)
-#     await view.updateMessageObject(message)
+                elif gameSet["id"] in betViews.keys() and gameSet["state"] != 3:
+                    await resetSet(guild, event, jsonData, gameSet, "<2 users assigned to bracket")
+
 
 async def addToAuditLog(message):
     if os.path.exists("eventData.json"):

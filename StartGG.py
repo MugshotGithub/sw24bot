@@ -46,6 +46,7 @@ eventInfoQuery = gql(
                                 id
                                 fullRoundText
                                 state
+                                identifier
                                 slots {
                                     standing {
                                         stats {
@@ -77,7 +78,14 @@ async def get_games(tournament):
     tournament = await get_tournament_info(tournament)
 
     for event in tournament["events"]:
+        pools = ["", "Pool 1", "Pool 2", "Pool 3", "Pool 4", "Pool 5", "Pool 6"]
         eventInfo = await client.execute_async(eventInfoQuery, variable_values={"id": event["id"]})
+        for phase in eventInfo["event"]["phases"]:
+            for phaseGroup in phase["phaseGroups"]["nodes"]:
+                for gameSet in phaseGroup["sets"]["nodes"]:
+                    fullPhaseName = event["name"] + (phase["name"] if len(phase["phaseGroups"]["nodes"]) < 2 else f"{phase["name"]} {pools[int(phaseGroup["displayIdentifier"])]}")
+                    gameSet["id"] = fullPhaseName.replace(" ", "").replace("+", "plus") + gameSet["identifier"]
+
         yield eventInfo["event"]
 
 async def get_tournament_info(tournament):
