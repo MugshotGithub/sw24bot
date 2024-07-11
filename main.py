@@ -509,6 +509,10 @@ async def _transfer_points(fromMemberId, toMemberId, num):
               guild=discord.Object(id=guildId))
 async def transfer_points(interaction, member: discord.Member, points: int):
     await interaction.response.defer(ephemeral=True)
+    if points < 0:
+        await interaction.followup.send(f"Tsk Tsk")
+        return
+
     await addToAuditLog(f"{interaction.user.display_name} sent {member.display_name} {points} points")
     await _transfer_points(interaction.user.id, member.id, points)
     await interaction.followup.send(f"Sent {member.display_name} {points} points!")
@@ -518,6 +522,10 @@ async def transfer_points(interaction, member: discord.Member, points: int):
               guild=discord.Object(id=guildId))
 async def pay_member(interaction, member: discord.Member, points: int):
     await interaction.response.defer(ephemeral=True)
+    if points < 0:
+        await interaction.followup.send(f"Tsk Tsk")
+        return
+
     await addToAuditLog(f"{interaction.user.display_name} sent {member.display_name} {points} points")
     await _transfer_points(interaction.user.id, member.id, points)
     await interaction.followup.send(f"Sent {member.display_name} {points} points!")
