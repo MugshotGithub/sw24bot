@@ -14,8 +14,9 @@ from datetime import datetime
 from discord.ext import tasks
 from discord.utils import escape_markdown
 from dotenv import load_dotenv  # Python-dotenv package
-import discord_colorize
+
 from StartGG import get_games, get_tournament_info
+from art import create_square_ratio_bar
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -363,44 +364,24 @@ class BetView(discord.ui.View):
         message = await channel.fetch_message(result[0])
 
         embed = discord.Embed(title=f"{result[3]} - {result[2]}", colour=discord.Colour.from_str("#F62143"))
-        embed.add_field(name=discord.utils.escape_markdown(self.playerOneName), inline=True, value=result[6])
+        embed.add_field(name=discord.utils.escape_markdown(self.playerOneName), inline=True, value=f"\n**Score**\n{result[6]} \n\n**Bets**\n{result[4]} WindCoin\n")
         embed.add_field(name='', value="vs", inline=True)
-        embed.add_field(name=discord.utils.escape_markdown(self.playerTwoName), inline=True, value=result[7])
-        embed.add_field(name='', inline=False, value='')
+        embed.add_field(name=discord.utils.escape_markdown(self.playerTwoName), inline=True, value=f"\n**Score**\n{result[7]} \n\n**Bets**\n{result[5]} WindCoin\n")
+        embed.add_field(name='Bet Ratio:', value="", inline=False)
+        embed.set_image(url=f'attachment://{self.setId}.png')
 
-        embed.add_field(name='Bets total', inline=True, value=f"{result[4]} WindCoin")
-        embed.add_field(name='', inline=True, value='')
-        embed.add_field(name=' ᲼᲼ ', inline=True, value=f"{result[5]} WindCoin")
-        colors = discord_colorize.Colors()
+        create_square_ratio_bar(result[4], result[5], f"{self.setId}.png")
 
-        totalBet = result[4] + result[5]
-        totalHashes = 52
-
-        if result[4] > 0:
-            numPlayerOne = round((result[4] / totalBet) * totalHashes)
-        else:
-            numPlayerOne = 0
-
-        if result[5] > 0:
-            numPlayerTwo = round((result[5] / totalBet) * totalHashes)
-        else:
-            numPlayerTwo = 0
-
-        numNone = 0 if result[4] + result[5] >= 1 else totalHashes
-
-        #Formatting looks weird but it is what it is
-        progressBar = f"""```ansi
-{colors.colorize('𓃑' * numPlayerOne, fg='cyan')}{colors.colorize('𓃑' * numPlayerTwo, fg='blue')}{colors.colorize('𓃑' * numNone, fg='gray')}
-```
-        """
-        embed.add_field(name='', value=progressBar, inline=False)
+        file = discord.File(f"{self.setId}.png")
 
         if self.hasStarted:
             embed.set_footer(text="Game has started, Betting no longer allowed")
             await message.edit(embed=embed, view=None)
             return
 
-        await message.edit(embed=embed)
+        await message.edit(embed=embed, attachments=[file])
+
+        os.remove(f"{self.setId}.png")
 
     async def endGame(self):
         if not self.hasEnded:
@@ -459,7 +440,7 @@ class BetView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    await tree.sync(guild=discord.Object(id=guildId))
+    # await tree.sync(guild=discord.Object(id=guildId))
     global viewHelper
 
     try:
