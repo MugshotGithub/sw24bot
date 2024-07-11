@@ -248,10 +248,10 @@ async def reconnectBetViews():
     con.close()
 
     for betSet in sets:
-        if betSet[13] != 1:
-            view = BetView(betSet[5], betSet[6], betSet[0], betSet[11], betSet[12] == 1)
-            betViews[betSet[0]] = view
-            bot.add_view(view)
+        view = BetView(betSet[5], betSet[6], betSet[0], betSet[11], betSet[12] == 1, betSet[13] == 1)
+        betViews[betSet[0]] = view
+        bot.add_view(view)
+        await view.update()
 
 
 class BetView(discord.ui.View):
@@ -433,7 +433,6 @@ class BetView(discord.ui.View):
 
                     member = guild.get_member(bet[0]) if guild.get_member(bet[0]) is not None else await guild.fetch_member(bet[0])
                     await member.send(f"You won {amount} WindCoin from the bet placed on {escape_markdown(playerOne)} vs {escape_markdown(playerTwo)} (**{gameTitle}** - {setTitle}) \nYour total is now {bal}")
-
 
             await viewHelper.update_leaderboard()
 
