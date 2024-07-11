@@ -417,7 +417,7 @@ class BetView(discord.ui.View):
 
                     amount = bet[2]
 
-                    payout = (totalPayout / info[winner]) * amount
+                    payout = round((totalPayout / info[winner]) * amount)
 
                     if payout < amount*2:
                         payout = amount*2
