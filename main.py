@@ -277,6 +277,9 @@ class BetView(discord.ui.View):
         playerTwoButton.callback = self.playerTwo
         self.add_item(playerTwoButton)
 
+        if self.hasEnded:
+            self.endGame()
+
     async def playerOne(self, interaction):
         if self.hasStarted:
             return await interaction.response.send_message("This game has started, you can no longer bet on it.",
@@ -384,11 +387,18 @@ class BetView(discord.ui.View):
         os.remove(f"{self.setId}.png")
 
     async def endGame(self):
+
         if not self.hasEnded:
             self.hasEnded = True
             await self.update()
             con = sqlite3.connect('database.db', autocommit=True)
             cur = con.cursor()
+
+            cur.execute(
+                'SELECT userId, winner, amount FROM bets WHERE setId = ?',
+                (self.setId,)
+            )
+            bets = cur.fetchall()
 
             cur.execute('UPDATE sets SET ended = 1 WHERE setId = ?', (self.setId,))
 
@@ -402,15 +412,10 @@ class BetView(discord.ui.View):
             playerOne = info[4]
             playerTwo = info[5]
 
+            cur.execute("DELETE FROM bets WHERE setId = ?", (self.setId,))
             totalPayout = info[0] + info[1]
 
             winner = 0 if info[2] > info[3] else 1
-
-            cur.execute(
-                'SELECT userId, winner, amount FROM bets WHERE setId = ?',
-                (self.setId,)
-            )
-            bets = cur.fetchall()
 
             for bet in bets:
                 if bet[1] == winner:
@@ -433,6 +438,7 @@ class BetView(discord.ui.View):
 
                     member = guild.get_member(bet[0]) if guild.get_member(bet[0]) is not None else await guild.fetch_member(bet[0])
                     await member.send(f"You won {amount} WindCoin from the bet placed on {escape_markdown(playerOne)} vs {escape_markdown(playerTwo)} (**{gameTitle}** - {setTitle}) \nYour total is now {bal}")
+                    await addToAuditLog(f"{member.display_name} won {amount} WindCoin from the bet placed on {escape_markdown(playerOne)} vs {escape_markdown(playerTwo)} (**{gameTitle}** - {setTitle})")
 
             await viewHelper.update_leaderboard()
 
@@ -693,6 +699,11 @@ async def setup_tournament(interaction, tournament_stub: str):
         await interaction.followup.send(f"You do not have permission to use this command")
         return
 
+    tournament = await get_tournament_info(tournament_stub)
+    if tournament is None:
+        await interaction.followup.send(f"Could not get info from StartGG")
+        return
+
     guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
 
     con = sqlite3.connect('database.db', autocommit=True)
@@ -708,7 +719,7 @@ async def setup_tournament(interaction, tournament_stub: str):
         "stub": tournament_stub
     }
 
-    tournament = await get_tournament_info(tournament_stub)
+
     category = await guild.create_category(tournament["name"])
     jsonData["categoryId"] = category.id
 
@@ -800,6 +811,8 @@ async def _updateGames():
     guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
     eventUpdateTasks = []
     async for event in get_games(jsonData["stub"]):
+        if event is None:
+            continue
         eventUpdateTasks.append(_updateEvent(jsonData, event, guild))
 
     eventCoroutines = asyncio.gather(*eventUpdateTasks)

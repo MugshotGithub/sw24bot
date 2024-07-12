@@ -74,23 +74,35 @@ eventInfoQuery = gql(
 # This is a Generator
 # This should be used in a for loop.
 async def get_games(tournament):
-    # Execute the query on the transport
-    tournament = await get_tournament_info(tournament)
+    try:
+        # Execute the query on the transport
+        tournament = await get_tournament_info(tournament)
+    except Exception:
+        yield None
+    if tournament is None:
+        yield None
 
-    for event in tournament["events"]:
-        pools = ["", "Pool 1", "Pool 2", "Pool 3", "Pool 4", "Pool 5", "Pool 6"]
-        eventInfo = await client.execute_async(eventInfoQuery, variable_values={"id": event["id"]})
-        for phase in eventInfo["event"]["phases"]:
-            for phaseGroup in phase["phaseGroups"]["nodes"]:
-                for gameSet in phaseGroup["sets"]["nodes"]:
-                    fullPhaseName = event["name"] + (phase["name"] if len(phase["phaseGroups"]["nodes"]) < 2 else f"{phase["name"]} {pools[int(phaseGroup["displayIdentifier"])]}")
-                    gameSet["id"] = fullPhaseName.replace(" ", "").replace("+", "plus").replace(":", "") + gameSet["identifier"]
+    try:
+        for event in tournament["events"]:
+            pools = ["", "Pool 1", "Pool 2", "Pool 3", "Pool 4", "Pool 5", "Pool 6"]
+            eventInfo = await client.execute_async(eventInfoQuery, variable_values={"id": event["id"]})
+            for phase in eventInfo["event"]["phases"]:
+                for phaseGroup in phase["phaseGroups"]["nodes"]:
+                    for gameSet in phaseGroup["sets"]["nodes"]:
+                        fullPhaseName = event["name"] + (phase["name"] if len(phase["phaseGroups"]["nodes"]) < 2 else f"{phase["name"]} {pools[int(phaseGroup["displayIdentifier"])]}")
+                        gameSet["id"] = fullPhaseName.replace(" ", "").replace("+", "plus").replace(":", "") + gameSet["identifier"]
 
-        yield eventInfo["event"]
+            yield eventInfo["event"]
+    except Exception:
+        yield None
+
 
 async def get_tournament_info(tournament):
-    result = await client.execute_async(eventIdQuery, variable_values={"slug": tournament})
-    return result["tournament"]
+    try:
+        result = await client.execute_async(eventIdQuery, variable_values={"slug": tournament})
+        return result["tournament"]
+    except Exception:
+        return None
 
 
 
