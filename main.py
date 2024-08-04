@@ -1,11 +1,8 @@
 import asyncio
-import functools
 import json
 import os
-import random
 import re
 import time
-import typing
 
 import discord
 from discord import app_commands
