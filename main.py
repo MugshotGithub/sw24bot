@@ -2,6 +2,7 @@ import asyncio
 import functools
 import json
 import os
+import random
 import re
 import time
 import typing
@@ -28,7 +29,7 @@ tree = app_commands.CommandTree(bot)
 guildId = int(os.getenv("GUILD_ID"))
 betViews = {}
 
-
+# Internal function to check if a user has permission to use certain commands
 async def _isAdmin(userId):
     adminFile = open("admins.json")
     adminData = json.load(adminFile)
@@ -52,7 +53,7 @@ async def _isAdmin(userId):
 
     return False
 
-
+# Function to remove points
 async def _remove_points(userId, points, update=True):
     conn = sqlite3.connect('database.db', autocommit=True)
     cursor = conn.cursor()
@@ -62,7 +63,7 @@ async def _remove_points(userId, points, update=True):
     if update:
         await viewHelper.update_leaderboard()
 
-
+# Function to give points
 async def _give_points(userId, points, update=True):
     conn = sqlite3.connect('database.db', autocommit=True)
     cursor = conn.cursor()
@@ -72,7 +73,7 @@ async def _give_points(userId, points, update=True):
     if update:
         await viewHelper.update_leaderboard()
 
-
+# Helper function to format a statistic for the leaderboard from the db
 async def _get_leaderboard(stat="points") -> list:
     guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
     con = sqlite3.connect('database.db')
@@ -100,13 +101,15 @@ async def _get_leaderboard(stat="points") -> list:
 #     return cur.fetchall()[0]
 
 
+# Formats the get
 def __format_leaderboard__(data):
     content = ""
     for index, stat in enumerate(data):
         content += f"{index}. {stat[0]}: {stat[1]}\n"
     return content
 
-
+# Helper to keep the scoreboard updated and accurate
+# It's not really a view, but it was once upon a time, so you can fight me
 class ViewHelperScoreboard:
     def __init__(self, view, channelId, messageId=None):
         self.view = view
@@ -143,6 +146,7 @@ class ViewHelperScoreboard:
 viewHelper = ViewHelperScoreboard(None, None)
 
 
+# The UI form that is created upon clicking a bet on button
 class BetEntryForm(discord.ui.Modal, title="Bet on set"):
     def __init__(self, playerBetOn, setId):
         super().__init__()
@@ -237,7 +241,7 @@ class BetEntryForm(discord.ui.Modal, title="Bet on set"):
         global betViews
         await betViews[self.setId].update()
 
-
+# Reconnect all the bet views when the bot restarts
 async def reconnectBetViews():
     con = sqlite3.connect('database.db')
     cur = con.cursor()
@@ -253,7 +257,7 @@ async def reconnectBetViews():
         bot.add_view(view)
         await view.update()
 
-
+# The controller for the bet messages
 class BetView(discord.ui.View):
     def __init__(self, playerOneName, playerTwoName, setId, timestamp, started=False, ended=False):
         super().__init__(timeout=None)
@@ -280,6 +284,7 @@ class BetView(discord.ui.View):
         if self.hasEnded:
             self.endGame()
 
+    # Handles the interaction to bet for player one
     async def playerOne(self, interaction):
         if self.hasStarted:
             return await interaction.response.send_message("This game has started, you can no longer bet on it.",
@@ -288,6 +293,7 @@ class BetView(discord.ui.View):
         await interaction.response.send_modal(BetEntryForm(self.playerOneName, self.setId))
         await self.update()
 
+    # Handles the interaction to bet for player two
     async def playerTwo(self, interaction):
         if self.hasStarted:
             return await interaction.response.send_message("This game has started, you can no longer bet on it.",
@@ -296,6 +302,7 @@ class BetView(discord.ui.View):
         await interaction.response.send_modal(BetEntryForm(self.playerTwoName, self.setId))
         await self.update()
 
+    # Internal helper function to update the message
     async def updateMessageObject(self, message: discord.Message):
         con = sqlite3.connect('database.db', autocommit=True)
         cur = con.cursor()
@@ -306,6 +313,7 @@ class BetView(discord.ui.View):
         con.close()
         await self.update(updateScoreboard=False)
 
+    # Processes the score from the start.gg API
     async def updateScore(self, playerOneScore, playerTwoScore):
 
         con = sqlite3.connect('database.db', autocommit=True)
@@ -332,7 +340,9 @@ class BetView(discord.ui.View):
         con.close()
         await self.update()
 
+    # Called after the game has started, will be called every time as the bet is stored in memory and not DB
     async def startGame(self, update=True, override=False):
+        # Can be forcefully overridden, but should give at least 2 minutes for game to start
         if not self.hasStarted and ((round(time.time()) - self.timeStarted) > 120 or override):
             con = sqlite3.connect('database.db', autocommit=True)
             cur = con.cursor()
@@ -345,6 +355,7 @@ class BetView(discord.ui.View):
             if update:
                 await self.update()
 
+    # Generic update handler
     async def update(self, updateScoreboard=True):
         if updateScoreboard:
             await viewHelper.update_leaderboard()
@@ -386,6 +397,7 @@ class BetView(discord.ui.View):
 
         os.remove(f"{self.setId}.png")
 
+    # Same as start game but for game finishing
     async def endGame(self):
 
         if not self.hasEnded:
@@ -443,6 +455,7 @@ class BetView(discord.ui.View):
             await viewHelper.update_leaderboard()
 
 
+# Startup event
 @bot.event
 async def on_ready():
     # await tree.sync(guild=discord.Object(id=guildId))
@@ -498,7 +511,7 @@ async def remove_points(interaction, member: discord.Member, points: int):
     await _remove_points(member.id, points)
     await interaction.followup.send(f"Removed {points} points from {member.display_name}")
 
-
+# Internal transfer points function, will trust any information passed to it
 async def _transfer_points(fromMemberId, toMemberId, num):
     guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
     await _remove_points(fromMemberId, num, update=False)
@@ -544,8 +557,9 @@ async def post_leaderboard(interaction):
         leaderboard += f"\n* {member.display_name}: {points}"
     await interaction.followup.send(leaderboard)
 
+# Allows users to check ballance
 @tree.command(name="balance", description="Gets your balance", guild=discord.Object(id=guildId))
-async def post_leaderboard(interaction):
+async def check_balance(interaction):
     await interaction.response.defer(ephemeral=True)
     con = sqlite3.connect('database.db')
     cur = con.cursor()
@@ -559,6 +573,7 @@ async def post_leaderboard(interaction):
 
     await interaction.followup.send(f"You have {results[0][0]} points")
 
+# Creates the points leaderboard
 @tree.command(name="create-live-leaderboard", description="Create the live leaderboard",
               guild=discord.Object(id=guildId))
 async def create_live_leaderboard(interaction):
@@ -573,7 +588,9 @@ async def create_live_leaderboard(interaction):
     await vh.post_view()
     await interaction.followup.send(f"Creating post", ephemeral=True, delete_after=3, silent=True)
 
-
+#########################################################
+# This bot uses an internal admin system. Users with Admin permissions from the server are also granted these permissions
+#########################################################
 @tree.command(name="add-admin-user", description="Adds a member to the list of admins",
               guild=discord.Object(id=guildId))
 async def add_admin_user(interaction, member: discord.Member):
@@ -692,6 +709,7 @@ async def remove_admin_role(interaction, role: discord.Role):
     await interaction.followup.send(f"Removed {role.name} from the admin list")
 
 
+# Command that inits the tournament
 @tree.command(name="setup-tournament", guild=discord.Object(id=guildId))
 async def setup_tournament(interaction, tournament_stub: str):
     await interaction.response.defer(ephemeral=True)
@@ -760,7 +778,7 @@ async def setup_tournament(interaction, tournament_stub: str):
     eventDataFile.close()
     await interaction.followup.send(f"Tournament betting has been initialised")
 
-
+# Clears the tournament to be a blank slate
 @tree.command(name="clear-tournament", guild=discord.Object(id=guildId))
 async def clear_tournament(interaction):
     await interaction.response.defer(ephemeral=True)
@@ -793,6 +811,7 @@ async def clear_tournament(interaction):
     updateGames.stop()
     await interaction.followup.send(f"Tournament has been reset")
 
+# Attempts to update games every 60 seconds but will not start it again if the last one is still running (i.e. a slow API call)
 running = False
 @tasks.loop(seconds=60)
 async def updateGames():
@@ -801,6 +820,7 @@ async def updateGames():
         await _updateGames()
 
 
+# Main update loop, calls API and then updates all messages
 async def _updateGames():
     global running
     running = True
@@ -820,6 +840,7 @@ async def _updateGames():
 
     running = False
 
+# Removes the specified set's message and removes the set from DB
 async def resetSet(guild, event, jsonData, gameSet, messageText="resetting bet"):
     con = sqlite3.connect('database.db', autocommit=True)
     cur = con.cursor()
@@ -863,6 +884,7 @@ async def resetSet(guild, event, jsonData, gameSet, messageText="resetting bet")
     await addToAuditLog(f"{gameSet["id"]} has been reset, {messageText}")
     con.close()
 
+# Updates each game from the data grabbed from the StartGG API
 async def _updateEvent(jsonData, event, guild):
     con = sqlite3.connect('database.db', autocommit=True)
     cur = con.cursor()
@@ -937,7 +959,7 @@ async def _updateEvent(jsonData, event, guild):
                 elif gameSet["id"] in betViews.keys() and gameSet["state"] != 3:
                     await resetSet(guild, event, jsonData, gameSet, "<2 users assigned to bracket")
 
-
+# Helper function to add a message to specified audit log
 async def addToAuditLog(message):
     if os.path.exists("eventData.json"):
         guild = bot.get_guild(guildId) if bot.get_guild(guildId) is not None else await bot.fetch_guild(guildId)
@@ -945,7 +967,5 @@ async def addToAuditLog(message):
             jsonData = json.load(data)
             channel = guild.get_channel(jsonData["auditId"]) if guild.get_channel(jsonData["auditId"]) is not None else await guild.fetch_channel(jsonData["auditId"])
             await channel.send(message)
-
-
 
 bot.run(os.getenv("BOT_KEY"))
